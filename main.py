@@ -1,48 +1,160 @@
-from pkg.plugin.context import register, handler, llm_func, BasePlugin, APIHost, EventContext
+from pkg.plugin.context import register, handler, BasePlugin, APIHost, EventContext
 from pkg.plugin.events import *  # 导入事件类
+from datetime import datetime
+from .database import PurchaseDB
+from dateutil.parser import parse  # 新增日期解析库
 
-
-# 注册插件
-@register(name="Hello", description="hello world", version="0.1", author="RockChinQ")
-class MyPlugin(BasePlugin):
-
-    # 插件加载时触发
+@register(
+    name="SpendFlow",
+    description="物品购买记录统计插件",
+    version="1.0",
+    author="sheetung"
+)
+class SpendFlowPlugin(BasePlugin):
     def __init__(self, host: APIHost):
-        pass
+        self.db = PurchaseDB()  # 初始化数据库连接
 
-    # 异步初始化
-    async def initialize(self):
-        pass
+    @handler(GroupMessageReceived)
+    async def on_message(self, ctx: EventContext):
+        msg = str(ctx.event.message_chain).strip()
+        launcher_id = str(ctx.event.launcher_id)
+        launcher_type = str(ctx.event.launcher_type)
+        
+        if not self.check_access_control(self.ap.pipeline_cfg, launcher_type, launcher_id):
+            # print(f'您被杀了哦')
+            return
 
-    # 当收到个人消息时触发
-    @handler(PersonNormalMessageReceived)
-    async def person_normal_message_received(self, ctx: EventContext):
-        msg = ctx.event.text_message  # 这里的 event 即为 PersonNormalMessageReceived 的对象
-        if msg == "hello":  # 如果消息为hello
+        if not msg.startswith("jw"):
+            return
+        args = msg.split()[1:]  # 去除命令头
+        user_id = str(ctx.event.sender_id)
 
-            # 输出调试信息
-            self.ap.logger.debug("hello, {}".format(ctx.event.sender_id))
+        # 命令路由
+        try:
+            if args[0] == 'v':
+                await self._show_stats(ctx, user_id)
+            elif args[0] == 'd' and len(args) > 1:
+                await self._delete_purchase(ctx, args[1])
+            else:
+                await self._add_purchase(ctx, user_id, args)
+        except Exception as e:
+            await ctx.reply(f"⚠️ 命令执行出错: {str(e)}")
 
-            # 回复消息 "hello, <发送者id>!"
-            ctx.add_return("reply", ["hello, {}!".format(ctx.event.sender_id)])
+    async def _add_purchase(self, ctx, user_id, args):
+        """处理添加命令"""
+        try:
+                # 日期解析与校验
+                date = None
+                if len(args) >= 4:  # 当参数包含日期时
+                    try:
+                        parsed_date = parse(args[-1])
+                        if parsed_date > datetime.now():
+                            await ctx.reply("❌ 消费日期不能晚于今天")
+                            return
+                        date = parsed_date.strftime("%Y-%m-%d")
+                        args = args[:-1]
+                    except:
+                        pass
+                # 参数完整性检查
+                if len(args) < 3:
+                    await ctx.reply("❌ 参数不足\n格式：jw [物品] [平台] [价格] <日期>")
+                    return
+                price = float(args[-1])
+                platform = args[-2]
+                item = " ".join(args[:-2])
+                pid = self.db.add_purchase(user_id, item, platform, price, date)
+                
+                # 生成详情报告
+                detail_msg = [
+                    f"✅ 已记录 #{pid}",
+                    f"▫️物品：{item}",
+                    f"▫️平台：{platform}",
+                    f"▫️金额：{price:.2f}元",
+                    f"▫️日期：{date or '今日'}"
+                ]
+                await ctx.reply("\n".join(detail_msg))
+        except ValueError:
+            await ctx.reply("❌ 价格必须为数字")
+        except Exception as e:
+            await ctx.reply(f"❌ 添加失败: {str(e)}")
+            
+    async def _show_stats(self, ctx, user_id):
+        """显示统计信息"""
+        records = self.db.get_purchases(user_id)
+        if not records:
+            await ctx.reply("📭 暂无消费记录")
+            return
+        total = 0.0
+        report = ["📊 消费统计"]
+        for idx, r in enumerate(records, 1):  # 从 1 开始编号
+            days = (datetime.now() - datetime.strptime(r[4], "%Y-%m-%d")).days + 1
+            daily_cost = r[3] / days
+            total += daily_cost
+            report.append(
+                f"#{idx} {r[1]} | {r[3]}元\n"  # 显示虚拟序号
+                f"平台：{r[2]} | 日均：{daily_cost:.2f}元/天"
+            )
+        report.append(f"---\n总计日均：{total:.2f}元/天")
+        await ctx.reply("\n".join(report))
 
-            # 阻止该事件默认行为（向接口获取回复）
-            ctx.prevent_default()
+    async def _delete_purchase(self, ctx, virtual_id):
+        """通过虚拟序号删除并显示详情"""
+        try:
+            user_id = str(ctx.event.sender_id)
+            records = self.db.get_purchases(user_id)
+            
+            # 验证序号有效性
+            if not 1 <= int(virtual_id) <= len(records):
+                await ctx.reply("❌ 无效序号")
+                return
+                
+            # 获取目标记录
+            target_record = records[int(virtual_id)-1]
+            real_id = target_record[0]
+            item = target_record[1]
+            platform = target_record[2]
+            price = target_record[3]
+            date = target_record[4]
+            
+            # 执行删除
+            if self.db.delete_purchase(real_id):
+                # 构建详情消息
+                detail_msg = [
+                    f"✅ 已删除记录 #{virtual_id}",
+                    "▫️物品：{}".format(item),
+                    "▫️平台：{}".format(platform),
+                    "▫️金额：{:.2f}元".format(price),
+                    "▫️日期：{}".format(date)
+                ]
+                await ctx.reply("\n".join(detail_msg))
+            else:
+                await ctx.reply("❌ 删除失败")
+        except ValueError:
+            await ctx.reply("❌ 请输入数字序号")
+        except Exception as e:
+            await ctx.reply(f"⚠️ 错误: {str(e)}")
 
-    # 当收到群消息时触发
-    @handler(GroupNormalMessageReceived)
-    async def group_normal_message_received(self, ctx: EventContext):
-        msg = ctx.event.text_message  # 这里的 event 即为 GroupNormalMessageReceived 的对象
-        if msg == "hello":  # 如果消息为hello
-
-            # 输出调试信息
-            self.ap.logger.debug("hello, {}".format(ctx.event.sender_id))
-
-            # 回复消息 "hello, everyone!"
-            ctx.add_return("reply", ["hello, everyone!"])
-
-            # 阻止该事件默认行为（向接口获取回复）
-            ctx.prevent_default()
+    def check_access_control(pipeline_cfg, launcher_type: str, launcher_id: int) -> bool:
+        """
+        访问控制检查函数
+        :param pipeline_cfg: 流水线配置对象
+        :param launcher_type: 请求类型 'group' 或 'person'
+        :param launcher_id: 请求来源ID
+        :return: 是否允许通过访问控制
+        """
+        ac_config = pipeline_cfg.data['access-control']
+        mode = ac_config['mode']
+        sess_list = ac_config[mode]
+        # 处理通配符匹配
+        wildcard = f"{launcher_type}_*"
+        if wildcard in sess_list:
+            return mode == 'whitelist'  # 白名单模式遇到通配符直接放行
+        # 构建完整会话标识
+        current_session = f"{launcher_type}_{launcher_id}"
+        
+        # 判断匹配结果
+        in_list = current_session in sess_list
+        return in_list if mode == 'whitelist' else not in_list
 
     # 插件卸载时触发
     def __del__(self):
