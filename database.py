@@ -2,9 +2,14 @@ import os
 import sqlite3
 from datetime import datetime
 
+BASE_DIR = "data/plugins/SpendFlow"
+DB_PATH = os.path.join(BASE_DIR, 'purchases.db')
+
 class PurchaseDB:
     def __init__(self):
-        self.conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), 'purchases.db'))
+        # os.makedirs(BASE_DIR, exist_ok=True)
+        # os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        self.conn = sqlite3.connect(DB_PATH)
         self._init_db()
 
     def _init_db(self):
