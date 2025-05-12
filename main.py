@@ -17,11 +17,11 @@ class SpendFlowPlugin(BasePlugin):
     @handler(GroupMessageReceived)
     async def on_message(self, ctx: EventContext):
         msg = str(ctx.event.message_chain).strip().lstrip('/')
-        launcher_id = str(ctx.event.launcher_id)
-        launcher_type = str(ctx.event.launcher_type)
+        # launcher_id = str(ctx.event.launcher_id)
+        # launcher_type = str(ctx.event.launcher_type)
         
-        if not self.check_access_control(launcher_type, launcher_id):
-            # print(f'您被杀了哦')
+        if not self.check_access_control(ctx):
+            self.ap.logger.info(f'根据访问控制，插件[KeysChat]忽略消息\n')
             return
 
         if not msg.startswith("jw"):
@@ -160,7 +160,7 @@ class SpendFlowPlugin(BasePlugin):
         except Exception as e:
             await ctx.reply(f"⚠️ 错误: {str(e)}")
 
-    def check_access_control(self, launcher_type: str, launcher_id: int) -> bool:
+    def check_access_control(self, ctx: EventContext) -> bool:
         """
         访问控制检查函数
         :param pipeline_cfg: 流水线配置对象
@@ -168,10 +168,11 @@ class SpendFlowPlugin(BasePlugin):
         :param launcher_id: 请求来源ID
         :return: 是否允许通过访问控制
         """
-        pipeline_cfg = self.ap.pipeline_cfg 
-        ac_config = pipeline_cfg.data['access-control']
-        mode = ac_config['mode']
-        sess_list = ac_config[mode]
+        launcher_id = str(ctx.event.launcher_id)
+        launcher_type = str(ctx.event.launcher_type)
+        mode = ctx.event.query.pipeline_config['trigger']['access-control']['mode']
+        sess_list = ctx.event.query.pipeline_config['trigger']['access-control'][mode]
+
         # 处理通配符匹配
         wildcard = f"{launcher_type}_*"
         if wildcard in sess_list:

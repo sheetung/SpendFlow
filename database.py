@@ -7,7 +7,7 @@ DB_PATH = os.path.join(BASE_DIR, 'purchases.db')
 
 class PurchaseDB:
     def __init__(self):
-        # os.makedirs(BASE_DIR, exist_ok=True)
+        os.makedirs(BASE_DIR, exist_ok=True)
         # os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         self.conn = sqlite3.connect(DB_PATH)
         self._init_db()
