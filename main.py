@@ -2,6 +2,9 @@ from pkg.plugin.context import register, handler, BasePlugin, APIHost, EventCont
 from pkg.plugin.events import *  # 导入事件类
 from datetime import datetime
 from .database import PurchaseDB
+from plugins.SpendFlow.html2img.html2img import HtmlToImage
+import os
+from pkg.platform.types import *
 
 @register(
     name="SpendFlow",
@@ -13,6 +16,10 @@ class SpendFlowPlugin(BasePlugin):
     def __init__(self, host: APIHost):
         self.ap = host.ap
         self.db = PurchaseDB()  # 初始化数据库连接
+        self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        self.font_path = os.path.join(self.BASE_DIR,'html2img', 'tool', 'font', 'SourceHanSansSC-VF.ttf')
+        self.wkhtmltoimage_path = "/usr/local/bin/wkhtmltoimage"
+        self.hti = HtmlToImage(wkhtmltoimage_path=self.wkhtmltoimage_path)
 
     @handler(GroupMessageReceived)
     async def on_message(self, ctx: EventContext):
@@ -21,7 +28,7 @@ class SpendFlowPlugin(BasePlugin):
         # launcher_type = str(ctx.event.launcher_type)
         
         if not self.check_access_control(ctx):
-            self.ap.logger.info(f'根据访问控制，插件[KeysChat]忽略消息\n')
+            # self.ap.logger.info(f'根据访问控制，插件[SpendFlow]忽略消息\n')
             return
 
         if not msg.startswith("jw"):
@@ -121,8 +128,49 @@ class SpendFlowPlugin(BasePlugin):
                 f"平台：{r[2]} | 日均：{daily_cost:.2f}元/天"
             )
         report.append(f"---\n总计日均：{total:.2f}元/天")
-        await ctx.reply("\n".join(report))
-
+        # await ctx.reply("\n".join(report))
+        # 修复日期格式化问题
+        now_str = datetime.now().strftime("%Y-%m-%d")
+        target_name = f"jw_{now_str}.png"
+        target_path = os.path.join(self.BASE_DIR, 'html2img', 'output', target_name)
+        self.ap.logger.info(f'report={report}')
+        self.ap.logger.info(f'target_path={target_path}')
+        
+        try:
+            # 确保输出目录存在
+            output_dir = os.path.dirname(target_path)
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # 判断是否已经生成
+            if os.path.exists(target_path):
+                msg_chain = MessageChain([
+                    Image(path=target_path)
+                ])
+                await ctx.reply(msg_chain)
+            else:
+                # 将列表转换为适合的格式（这里假设可以直接用换行符连接）
+                text_content = "\n".join(report)
+                
+                image_path = self.hti.convert_text_to_image(
+                    text=text_content,
+                    width=1080,
+                    font_path=self.font_path,
+                    img_name=target_name,
+                    background="#ffffff",
+                    border_radius="35px",
+                    horizontal_padding=40
+                )
+                
+                msg_chain = MessageChain([
+                    Image(path=image_path)
+                ])
+                await ctx.reply(msg_chain)
+                
+        except Exception as e:
+            # 捕获并记录任何异常
+            self.ap.logger.error(f"生成统计图片时出错: {str(e)}")
+            # 给用户友好的提示
+            await ctx.reply(f"⚠️ 生成统计图片失败: {str(e)}")
     async def _delete_purchase(self, ctx, virtual_id):
         """通过虚拟序号删除并显示详情"""
         try:
@@ -170,8 +218,19 @@ class SpendFlowPlugin(BasePlugin):
         """
         launcher_id = str(ctx.event.launcher_id)
         launcher_type = str(ctx.event.launcher_type)
-        mode = ctx.event.query.pipeline_config['trigger']['access-control']['mode']
-        sess_list = ctx.event.query.pipeline_config['trigger']['access-control'][mode]
+        # 临时适配langbot4.0特性
+        pipeline_data = getattr(self.ap.pipeline_cfg, 'data', None)
+        if not pipeline_data:
+            # add langbot 4.0 适配
+            try:
+                mode = ctx.event.query.pipeline_config['trigger']['access-control']['mode']
+                sess_list = ctx.event.query.pipeline_config['trigger']['access-control'][mode]
+            except Exception as e:
+                self.ap.logger.info(f"无法从 ctx 获取 access-control 设置: {e}")
+                return
+        else:
+            mode = pipeline_data['access-control']['mode']
+            sess_list = pipeline_data['access-control'][mode]
 
         # 处理通配符匹配
         wildcard = f"{launcher_type}_*"
